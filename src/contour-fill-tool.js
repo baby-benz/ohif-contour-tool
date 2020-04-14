@@ -1,19 +1,22 @@
 import csTools from "cornerstone-tools";
 import cornerstone from "cornerstone-core";
+import floodFill from "n-dimensional-flood-fill";
 
 const BaseBrushTool = csTools.importInternal("base/BaseBrushTool");
-import floodFill from "n-dimensional-flood-fill";
 
 const {drawBrushPixels} = csTools.importInternal(
     'util/segmentationUtils'
 );
 const segmentationModule = csTools.getModule('segmentation');
 
+const cursors = csTools.import('tools/cursors');
+
 export default class ContourFillTool extends BaseBrushTool {
   constructor(props = {}) {
     const defaultProps = {
       name: 'ContourFill',
       supportedInteractionTypes: ['Mouse', 'Touch'],
+      svgCursor: cursors.arrowAnnotateCursor,
       configuration: {},
     };
 
@@ -29,6 +32,7 @@ export default class ContourFillTool extends BaseBrushTool {
 
   init(evt) {
 
+    this.stateStorage = [];
     const eventData = evt.detail;
     const element = eventData.element;
 
@@ -61,6 +65,10 @@ export default class ContourFillTool extends BaseBrushTool {
     const eventData = evt.detail;
     this.init(evt);
     const {element, currentPoints} = eventData;
+
+    // Zeroing state storage
+    this.stateStorage = [];
+    this.reductionStep = 0;
 
     // Lock switching images when rendering data
     csTools.setToolDisabled('StackScrollMouseWheel', {});
@@ -106,16 +114,34 @@ export default class ContourFillTool extends BaseBrushTool {
 
     return true;
   }
+    // console.log(this.stateStorage[7].filter(i=>!this.stateStorage[6].includes(i))
+    //     .concat(this.stateStorage[6].filter(i=>!this.stateStorage[7].includes(i))));
 
   mouseDragCallback(evt) {
 
     const {currentPoints} = evt.detail;
 
+    // Previous iteration point
+    let prevCoords = this.finishCoords;
     // Current point
     this.finishCoords = currentPoints.image;
-    this._lastImageCoords = currentPoints.image;
+
+    /*if (
+      this.finishCoords.x - prevCoords.x < 0 ||
+      this.finishCoords.y - prevCoords.y < 0
+    ) {
+      console.log(this.paintEventData.labelmap2D.pixelData);
+      this.paintEventData.labelmap2D.pixelData = this.stateStorage[this.stateStorage.length - 2 - this.reductionStep];
+      this.reductionStep += 1;
+    } else if (this.reductionStep > 0) {
+      this.paintEventData.labelmap2D.pixelData = this.stateStorage[this.stateStorage.length - 1 - this.reductionStep];
+      this.reductionStep -= 1;
+    } else {
+      this._paint(evt);
+    }*/
 
     this._paint(evt);
+    this._lastImageCoords = currentPoints.image;
     cornerstone.updateImage(evt.detail.element);
   }
 
@@ -123,10 +149,13 @@ export default class ContourFillTool extends BaseBrushTool {
 
     const eventData = evt.detail;
     const {element, currentPoints} = eventData;
+    const cursorLayer = document.querySelector('#CursorLayer');
 
     this.finishCoords = currentPoints.image;
 
     this._drawing = false;
+
+    cursorLayer.parentNode.removeChild(cursorLayer);
 
     csTools.setToolActive('StackScrollMouseWheel', {});
 
@@ -201,6 +230,10 @@ export default class ContourFillTool extends BaseBrushTool {
     // Drawing
     const {labelmap2D, labelmap3D} = this.paintEventData;
 
+    console.log(labelmap2D.pixelData);
+    //console.log(evt.detail);
+    //evt.detail.element.getContext(2'.imageData = labelmap2D.pixelData;
+
     drawBrushPixels(
         pointerArray,
         labelmap2D.pixelData,
@@ -209,85 +242,81 @@ export default class ContourFillTool extends BaseBrushTool {
         false
     );
 
+    this.stateStorage.push(labelmap2D.pixelData);
+
     cornerstone.updateImage(evt.detail.element);
   }
 
   // Cursor
   renderBrush(evt) {
-
-    const {getters} = segmentationModule;
-    const eventData = evt.detail;
-    const viewport = eventData.viewport;
-    const context = eventData.canvasContext;
-    const element = eventData.element;
-    let mousePosition;
-    let width, height;
-
     if (this._drawing) {
+      const {getters} = segmentationModule;
+      const eventData = evt.detail;
+      const viewport = eventData.viewport;
+      const element = eventData.element;
+      let mousePosition;
+      let width, height;
+
+      let cursorContext= createContext(element);
+
+      cursorContext.strokeStyle = "rgba(255,255,255,0.1)";
+      cursorContext.fillStyle = "rgba(255,255,255,0.1)";
 
       let mouseEndPosition = this._lastImageCoords; //end ellipse point
       mousePosition = this.startCoords; //start ellipse point
 
-      context.strokeStyle = "rgba(255,255,255,0.1)";
-      context.fillStyle = "rgba(255,255,255,0.1)";
+      let xMouseDistance = mousePosition.x - mouseEndPosition.x;
+      let yMouseDistance = mousePosition.y - mouseEndPosition.y;
+      Math.abs(xMouseDistance) > Math.abs(yMouseDistance)
+          ? width = height = Math.abs(xMouseDistance) * viewport.scale
+          : width = height = Math.abs(yMouseDistance) * viewport.scale;
+      //width = Math.abs(mousePosition.x - mouseEndPosition.x) * viewport.scale;
+      //height = Math.abs(mousePosition.y - mouseEndPosition.y) * viewport.scale;
 
-      width = Math.abs(mousePosition.x - mouseEndPosition.x) * viewport.scale;
-      height = Math.abs(mousePosition.y - mouseEndPosition.y) * viewport.scale;
+      if (!mousePosition) {
+        return;
+      }
 
-    } else {
+      const {rows, columns} = eventData.image;
+      const {x, y} = mousePosition;
 
-      mousePosition = csTools.store.state.mousePositionImage;
-      const radius = 3 * (1 / viewport.scale);
-      width = radius * viewport.scale;
-      height = width;
-      context.strokeStyle = "rgb(0,255,0)";
-      context.fillStyle = "rgb(0,255,0)";
+      if (x < 0 || x > columns || y < 0 || y > rows) {
+        return;
+      }
+
+      cursorContext.setTransform(1, 0, 0, 1, 0, 0);
+
+      const {labelmap2D} = getters.labelmap2D(element);
+
+      const getPixelIndex = (x, y) => y * columns + x;
+      const spIndex = getPixelIndex(Math.floor(x), Math.floor(y));
+      const isInside = labelmap2D.pixelData[spIndex] === 1;
+      this.shouldErase = !isInside;
+
+      cursorContext.beginPath();
+
+      const startCoordsCanvas = window.cornerstone.pixelToCanvas(
+          element,
+          mousePosition,
+      );
+
+      cursorContext.ellipse(
+          startCoordsCanvas.x,
+          startCoordsCanvas.y,
+          width,
+          height,
+          0,
+          0,
+          2 * Math.PI,
+      );
+
+      cursorContext.stroke();
+      cursorContext.fill();
+
+      this._lastImageCoords = eventData.image;
 
     }
-
-    if (!mousePosition) {
-      return;
-    }
-
-    const {rows, columns} = eventData.image;
-    const {x, y} = mousePosition;
-
-    if (x < 0 || x > columns || y < 0 || y > rows) {
-      return;
-    }
-
-    context.setTransform(1, 0, 0, 1, 0, 0);
-
-    const {labelmap2D} = getters.labelmap2D(element);
-
-    const getPixelIndex = (x, y) => y * columns + x;
-    const spIndex = getPixelIndex(Math.floor(x), Math.floor(y));
-    const isInside = labelmap2D.pixelData[spIndex] === 1;
-    this.shouldErase = !isInside;
-
-    context.beginPath();
-
-    const startCoordsCanvas = window.cornerstone.pixelToCanvas(
-        element,
-        mousePosition,
-    );
-
-    context.ellipse(
-        startCoordsCanvas.x,
-        startCoordsCanvas.y,
-        width,
-        height,
-        0,
-        0,
-        2 * Math.PI,
-    );
-
-    context.stroke();
-    context.fill();
-
-    this._lastImageCoords = eventData.image;
   }
-
 }
 
 function get2DArray(imagePixelData, height, width) {
@@ -351,4 +380,21 @@ function count_a(imagePixelData2D, radius_x, radius_y, xStart, yStart) {
 
 function count_b(a, max) {
   return (Math.tanh(0.008 * (a / max)) < 0.001) ? 0.001 : Math.tanh(0.008 * (a / max));
+}
+
+function createContext(element) {
+  let canvas = document.querySelector("#CursorLayer");
+
+  if(!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = "CursorLayer";
+    canvas.width = element.clientWidth;
+    canvas.height = element.clientHeight;
+    canvas.style.position = 'absolute';
+    element.prepend(canvas);
+  }
+
+  let context = canvas.getContext("2d");
+  context.clearRect(0,0,element.clientWidth,element.clientHeight);
+  return context;
 }
